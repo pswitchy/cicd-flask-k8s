@@ -1,0 +1,62 @@
+name: Build and Deploy to Kind
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # Required to push to GitHub Container Registry
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Install Python Dependencies & Run Tests
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pytest app/
+
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build and Push Docker Image
+      id: build-image
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        push: true
+        tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
+
+    - name: Set up Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.3.0
+
+    - name: Provision Kind Cluster with Terraform
+      id: terraform
+      run: |
+        terraform init
+        terraform apply -auto-approve
+        # Export the kubeconfig to a file that later steps can use
+        terraform output -raw kubeconfig > kubeconfig.yaml
+
+    - name: Deploy to Kind Cluster
+      env:
+        KUBECONFIG: kubeconfig.yaml # Point kubectl to our new cluster
+      run: |
+        chmod +x ./scripts/deploy.sh
+        ./scripts/deploy.sh ghcr.io/${{ github.repository }}:${{ github.sha }}
